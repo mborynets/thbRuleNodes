@@ -52,7 +52,7 @@ import java.util.stream.Collectors;
         name = "Count gateways load",
         configClazz = TbCountGatewayLoadConfiguration.class,
         nodeDescription = "Counts load for each gateway",
-        nodeDetails = "v1.0.0",
+        nodeDetails = "v1.0.1",
         uiResources = {"static/rulenode/custom-nodes-config.js"},
         configDirective = "TbCountGatewayLoadConfiguration")
 
@@ -80,12 +80,9 @@ public class TbCountGatewayLoad implements TbNode {
 
     @Override
     public void onMsg(TbContext ctx, TbMsg msg) throws ExecutionException, InterruptedException, TbNodeException {
-//        List<Device> devices = getDevices(ctx, deviceType);
-//        log.info("Start calculating loss for {} devices", devices.size());
-//        for (Device device : devices) {
-//            log.info("Processing device {}", device.getName());
-//            processDevice(ctx, device);
-//        }
+        List<Device> devices = getDevices(ctx, deviceType);
+        log.info("Start calculating load for gateways");
+        countGatewayLoad(ctx, devices);
         ctx.tellSuccess(msg);
     }
 
@@ -96,8 +93,14 @@ public class TbCountGatewayLoad implements TbNode {
 
     private List<Device> getDevices(TbContext ctx, String deviceType) {
         PageLink pageLink = new PageLink(1000);
-        PageData<Device> pulse_sensor = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), deviceType, pageLink);
-        return pulse_sensor.getData();
+        PageData<Device> devices;
+        if (deviceType.equalsIgnoreCase("any")) {
+            devices = deviceService.findDevicesByTenantId(ctx.getTenantId(), pageLink);
+        }
+        else {
+            devices = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), deviceType, pageLink);
+        }
+        return devices.getData();
     }
 
     private ListenableFuture<List<TsKvEntry>> getTelemetry(Device device, TenantId tenantId, Long startTs, Long endTs) {
@@ -221,7 +224,8 @@ public class TbCountGatewayLoad implements TbNode {
     private void countGatewayLoad(TbContext ctx, List<Device> devices) {
         long startTs = Instant.ofEpochMilli(System.currentTimeMillis() - time).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
         ListenableFuture<Map<String, Device>> gatewaysMap = fetchGateways(ctx);
-        Collection<LoadEntry> gatewayLoads = new ArrayList<>();
+        HashMultimap<Long, LoadEntry> hashMultimap = HashMultimap.create();
+//        Collection<LoadEntry> gatewayLoads = new ArrayList<>();
 //        Map<String, TsKvEntry> gatewayLoads = new ConcurrentHashMap<>();
         for (Device device : devices) {
             ListenableFuture<List<MyMessage>> rawTelemetry = getRawTelemetry(ctx, device, ctx.getTenantId(), startTs, System.currentTimeMillis());
@@ -231,25 +235,30 @@ public class TbCountGatewayLoad implements TbNode {
                     for (String uniqueLrr : uniqueLrrs) {
                         long load = partition.stream().filter(raw -> Objects.equals(raw.lrrID, uniqueLrr)).count();
                         long maxTs = partition.stream().mapToLong(m -> m.ts).max().orElse(Long.MIN_VALUE);
-//                        BasicTsKvEntry gatewayLoad = new BasicTsKvEntry(maxTs, new LongDataEntry("load", load));
-                        gatewayLoads.add(new LoadEntry(uniqueLrr, load, maxTs));
+                        hashMultimap.put(maxTs, new LoadEntry(uniqueLrr, load, maxTs));
                     }
 //                      maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
                 });
                 return true;
             }, ctx.getDbCallbackExecutor());
         }
+        Collection<Collection<LoadEntry>> gatewayLoads = hashMultimap.asMap().values();
         Futures.transform(gatewaysMap, data -> {
             if (!data.isEmpty()) {
                 for (Map.Entry<String, Device> stringDeviceEntry : data.entrySet()) {
-                    long loadSum = gatewayLoads.stream().filter(l -> Objects.equals(l.lrrId, stringDeviceEntry.getKey())).collect(Collectors.toList()).stream().mapToLong(m -> m.load).sum();
+                    gatewayLoads.forEach(gatewayLoad -> {
+                        long loadSum = gatewayLoad.stream().filter(l -> Objects.equals(l.lrrId, stringDeviceEntry.getKey())).collect(Collectors.toList()).stream().mapToLong(m -> m.load).sum();
+                        long maxTs = gatewayLoad.stream().mapToLong(m -> m.ts).max().orElse(Long.MIN_VALUE);
+                        maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
+                        BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new LongDataEntry("load", loadSum));
+                        log.info("Gateway {} load on {} is {} messages", stringDeviceEntry.getValue().getName(), maxTs, loadSum);
+                        timeseriesService.save(ctx.getTenantId(), stringDeviceEntry.getValue().getId(), Collections.singletonList(result), TimeUnit.DAYS.toSeconds(3));
+                    });
 
                 }
             }
             return true;
         }, ctx.getDbCallbackExecutor());
-//                    BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new LongDataEntry("load", load.get()));
-//                    timeseriesService.save(ctx.getTenantId(), stringDeviceEntry.getValue().getId(), result);
     }
 
     class MyMessage {
