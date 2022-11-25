@@ -52,7 +52,7 @@ import java.util.stream.Collectors;
         name = "Count package loss",
         configClazz = TbCountPackageLossConfiguration.class,
         nodeDescription = "Counts package loss of all the LoRa devices",
-        nodeDetails = "v2",
+        nodeDetails = "v4",
         uiResources = {"static/rulenode/custom-nodes-config.js"},
         configDirective = "TbCountPackageLossConfiguration")
 
@@ -96,26 +96,58 @@ public class TbCountPackageLoss implements TbNode {
 
     private List<Device> getDevices(TbContext ctx, String deviceType) {
         PageLink pageLink = new PageLink(1000);
-        PageData<Device> pulse_sensor = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), deviceType, pageLink);
+        PageData<Device> pulse_sensor;
+        if (deviceType.equalsIgnoreCase("any")) {
+            pulse_sensor = deviceService.findDevicesByTenantId(ctx.getTenantId(), pageLink);
+        }
+        else {
+            pulse_sensor = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), deviceType, pageLink);
+        }
         return pulse_sensor.getData();
     }
 
-    private ListenableFuture<List<TsKvEntry>> getTelemetry(Device device, TenantId tenantId, Long startTs, Long endTs) {
+    private ListenableFuture<List<TsKvEntry>> getCounterTelemetry(Device device, TenantId tenantId, Long startTs, Long endTs) {
         BaseReadTsKvQuery baseReadTsKvQuery = new BaseReadTsKvQuery("count", startTs, endTs, 0, Integer.MAX_VALUE, Aggregation.NONE);
-        ListenableFuture<List<TsKvEntry>> all = timeseriesService.findAll(tenantId, device.getId(), Collections.singletonList(baseReadTsKvQuery));
-        return all;
+        return timeseriesService.findAll(tenantId, device.getId(), Collections.singletonList(baseReadTsKvQuery));
+    }
+
+    private ListenableFuture<List<TsKvEntry>> getPayloadTelemetry(Device device, TenantId tenantId, Long startTs, Long endTs) {
+        BaseReadTsKvQuery baseReadTsKvQuery = new BaseReadTsKvQuery("payload_hex", startTs, endTs, 0, Integer.MAX_VALUE, Aggregation.NONE);
+        return timeseriesService.findAll(tenantId, device.getId(), Collections.singletonList(baseReadTsKvQuery));
     }
 
     private List<TsKvEntry> calculateLossPercent(Collection<TsKvEntry> telemetry) {
-        long max = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).max().orElse(Long.MIN_VALUE);
-        long min = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).min().orElse(Long.MIN_VALUE);
-        long uniq = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).distinct().count();
+//        long max = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).max().orElse(Long.MIN_VALUE);
+//        long min = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).min().orElse(Long.MIN_VALUE);
+//        long uniq = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).distinct().count();
         long maxTs = telemetry.stream().mapToLong(TsKvEntry::getTs).max().orElse(Long.MIN_VALUE);
         maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
-        long requiredCount = max - min + 1;
-        double lossPercent = uniq*100/requiredCount;
-        BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new DoubleDataEntry("lossPercent", lossPercent));
-        return Collections.singletonList(result);
+        List<TsKvEntry> result = new ArrayList<>();
+        Iterator<TsKvEntry> iterator = telemetry.iterator();
+        TsKvEntry prev = null;
+        long lossSum = 0;
+        telemetry = telemetry.stream().sorted(Comparator.comparingLong(TsKvEntry::getTs)).collect(Collectors.toList());
+        for (TsKvEntry curr : telemetry) {
+            if (prev != null) {
+                long delta = curr.getLongValue().orElse(Long.MIN_VALUE) - prev.getLongValue().orElse(Long.MIN_VALUE);
+                if (delta > 1 && delta < 20) {
+                    lossSum += delta-1;
+                    log.info("Loss detected: {}", delta-1);
+                }
+            }
+            prev = curr;
+        }
+
+        double lossPercent = (double)lossSum / (lossSum + telemetry.size()) * 100;
+
+        BasicTsKvEntry loss = new BasicTsKvEntry(maxTs, new LongDataEntry("packageLoss", lossSum));
+        BasicTsKvEntry percent = new BasicTsKvEntry(maxTs, new DoubleDataEntry("lossPercent", lossPercent));
+        result.add(loss);
+        result.add(percent);
+//        long requiredCount = max - min + 1;
+//        double lossPercent = uniq*100/requiredCount;
+//        BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new DoubleDataEntry("lossPercent", lossPercent));
+        return result;
     }
 
     private Collection<Collection<TsKvEntry>> partitionByDay(List<TsKvEntry> telemetry) {
@@ -125,44 +157,93 @@ public class TbCountPackageLoss implements TbNode {
             String date = sdf.format(tsKvEntry.getTs());
             multimap.put(date, tsKvEntry);
         }
-        Collection<Collection<TsKvEntry>> values = multimap.asMap().values();
-        return values;
+        return multimap.asMap().values();
     }
 
-    private List<TsKvEntry> clearDuplicates(List<TsKvEntry> telemetry, TbContext ctx, Device device) {
-        HashSet<Long> uniqCounters = new HashSet<>();
+    private List<TsKvEntry> clearDuplicates(List<TsKvEntry> countersTelemetry, List<TsKvEntry> payloadsTelemetry, TbContext ctx, Device device) {
+        ArrayList<PayloadCounterPair> pairs = new ArrayList<>();
         ArrayList<TsKvEntry> duplicates = new ArrayList<>();
         ArrayList<TsKvEntry> withoutDuplicates = new ArrayList<>();
-        telemetry.sort(Comparator.comparingLong(TsKvEntry::getTs));
-        for (TsKvEntry tsKvEntry : telemetry) {
-            Optional<Long> value = tsKvEntry.getLongValue();
-            if (value.isPresent()) {
-                if (uniqCounters.contains(value.get())) {
-                    BasicTsKvEntry duplicate = new BasicTsKvEntry(tsKvEntry.getTs(), new BooleanDataEntry("packageDuplicate", true));
-                    duplicates.add(duplicate);
-                    timeseriesService.save(ctx.getTenantId(), device.getId(), Collections.singletonList(duplicate), TimeUnit.DAYS.toSeconds(90));
-                }
-                else {
-                    uniqCounters.add(value.get());
-                    withoutDuplicates.add(tsKvEntry);
+
+        for (TsKvEntry counter : countersTelemetry) {
+            for (TsKvEntry payload : payloadsTelemetry) {
+                long counterTs = counter.getTs();
+                long payloadTs = payload.getTs();
+                String payloadValueAsString = payload.getValueAsString();
+                if (counterTs == payloadTs) {
+                    pairs.add(new PayloadCounterPair(counter, payloadValueAsString));
+                    break;
                 }
             }
         }
+        pairs.sort(Comparator.comparingLong(PayloadCounterPair::getTs));
+
+        for (int i = 0; i < pairs.size() - 1; i++) {
+            boolean unique = true;
+            for (int j = i+1; j < pairs.size(); j++) {
+                long counter1 = pairs.get(i).counterTsKvEntry.getLongValue().orElse(Long.MIN_VALUE);
+                long counter2 = pairs.get(j).counterTsKvEntry.getLongValue().orElse(Long.MIN_VALUE);
+                String payload1 = pairs.get(i).payload;
+                String payload2 = pairs.get(j).payload;
+                if (counter1 == counter2 && payload1.equals(payload2)) {
+                    BasicTsKvEntry duplicate = new BasicTsKvEntry(pairs.get(i).counterTsKvEntry.getTs(), new BooleanDataEntry("hasDuplicates", true));
+                    duplicates.add(duplicate);
+                    timeseriesService.save(ctx.getTenantId(), device.getId(), Collections.singletonList(duplicate), TimeUnit.DAYS.toSeconds(30));
+//                    pairs.remove(i);
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                withoutDuplicates.add(pairs.get(i).counterTsKvEntry);
+            }
+        }
+
+        withoutDuplicates.sort(Comparator.comparingLong(TsKvEntry::getTs));
+
+//        for (PayloadCounterPair pair : pairs) {
+//            withoutDuplicates.add(pair.counterTsKvEntry);
+//        }
+//        countersTelemetry.sort(Comparator.comparingLong(TsKvEntry::getTs));
+//        for (TsKvEntry tsKvEntry : countersTelemetry) {
+//            Optional<Long> value = tsKvEntry.getLongValue();
+//            if (value.isPresent()) {
+//                if (uniqCounters.contains(value.get())) {
+//                    BasicTsKvEntry duplicate = new BasicTsKvEntry(tsKvEntry.getTs(), new BooleanDataEntry("packageDuplicate", true));
+//                    duplicates.add(duplicate);
+//                    timeseriesService.save(ctx.getTenantId(), device.getId(), Collections.singletonList(duplicate), TimeUnit.DAYS.toSeconds(90));
+//                }
+//                else {
+//                    uniqCounters.add(value.get());
+//                    withoutDuplicates.add(tsKvEntry);
+//                }
+//            }
+//        }
         log.info("Duplicates found: {}", duplicates.size());
         return  withoutDuplicates;
     }
 
     private void processDevice(TbContext ctx, Device device) {
         long startTs = Instant.ofEpochMilli(System.currentTimeMillis() - time).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
-        ListenableFuture<List<TsKvEntry>> future = getTelemetry(device, ctx.getTenantId(), startTs, System.currentTimeMillis());
-        Futures.transform(future, data -> {
-            if (!data.isEmpty()) {
-                List<TsKvEntry> clearData = clearDuplicates(data, ctx, device);
-                partitionByDay(clearData).forEach(partition -> {
-                    List<TsKvEntry> calculatedData = calculateLossPercent(partition);
-                    timeseriesService.save(ctx.getTenantId(), device.getId(), calculatedData, 0);
-                    log.info("Data saved {}", calculatedData);
-                });
+        ListenableFuture<List<TsKvEntry>> countersFuture = getCounterTelemetry(device, ctx.getTenantId(), startTs, System.currentTimeMillis());
+        ListenableFuture<List<TsKvEntry>> payloadsFuture = getPayloadTelemetry(device, ctx.getTenantId(), startTs, System.currentTimeMillis());
+
+        Futures.transform(countersFuture, countersData -> {
+            if (!countersData.isEmpty()) {
+                Futures.transform(payloadsFuture, payloadsData -> {
+                    if (!payloadsData.isEmpty()) {
+                        List<TsKvEntry> clearData = clearDuplicates(countersData, payloadsData, ctx, device);
+                        partitionByDay(clearData).forEach(partition -> {
+                            List<TsKvEntry> calculatedData = calculateLossPercent(partition);
+                            timeseriesService.save(ctx.getTenantId(), device.getId(), calculatedData, 0);
+                            log.info("Data saved {}", calculatedData);
+                        });
+                    }
+                    else {
+                        log.info("No data to compare");
+                    }
+                    return true;
+                }, ctx.getDbCallbackExecutor());
             }
             else {
                 log.info("No data saved");
@@ -212,6 +293,21 @@ public class TbCountPackageLoss implements TbNode {
             this.count = count;
             this.lrrID = lrrID;
             this.ts = ts;
+        }
+    }
+
+    class PayloadCounterPair {
+
+        private TsKvEntry counterTsKvEntry;
+        private String payload;
+
+        public PayloadCounterPair(TsKvEntry counterTsKvEntry, String payload) {
+            this.counterTsKvEntry = counterTsKvEntry;
+            this.payload = payload;
+        }
+
+        private Long getTs() {
+            return counterTsKvEntry.getTs();
         }
     }
 }
