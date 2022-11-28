@@ -15,6 +15,7 @@
  */
 package org.thingsboard.rule.engine.node.enrichment;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -52,7 +53,7 @@ import java.util.stream.Collectors;
         name = "Count gateways load",
         configClazz = TbCountGatewayLoadConfiguration.class,
         nodeDescription = "Counts load for each gateway",
-        nodeDetails = "v1.0.1",
+        nodeDetails = "v1.0.3",
         uiResources = {"static/rulenode/custom-nodes-config.js"},
         configDirective = "TbCountGatewayLoadConfiguration")
 
@@ -179,13 +180,18 @@ public class TbCountGatewayLoad implements TbNode {
         List<ListenableFuture<Boolean>> allFutures = new ArrayList<>();
         PageLink pageLink = new PageLink(1000);
         PageData<Device> gateways = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), "Gateway", pageLink);
+        log.info("{} gateways found", gateways.getData().size());
         for (Device gateway : gateways.getData()) {
             ListenableFuture<Optional<AttributeKvEntry>> future = ctx.getAttributesService().find(ctx.getTenantId(), gateway.getId(), "lrrID", DataConstants.SERVER_SCOPE);
             allFutures.add(Futures.transform(future, data -> {
-                map.put(data.get().getValueAsString(), gateway);
+                data.ifPresent(attributeKvEntry -> {
+                    map.put(attributeKvEntry.getValueAsString(), gateway);
+                    log.info("{} llrID is {}", gateway.getName(), attributeKvEntry.getValueAsString());
+                });
                 return true;
             }, ctx.getDbCallbackExecutor()));
         }
+        log.info("LrrId found for {} gateways", map.size());
         return Futures.transform(Futures.allAsList(allFutures), r -> map, ctx.getDbCallbackExecutor());
     }
 
@@ -204,20 +210,40 @@ public class TbCountGatewayLoad implements TbNode {
         BaseReadTsKvQuery baseReadTsKvQuery = new BaseReadTsKvQuery("raw", startTs, endTs, 0, Integer.MAX_VALUE, Aggregation.NONE);
         ListenableFuture<List<TsKvEntry>> all = timeseriesService.findAll(tenantId, device.getId(), Collections.singletonList(baseReadTsKvQuery));
         ListenableFuture<List<MyMessage>> future = Futures.transform(all, r -> {
-            return r.stream().map(e -> {
+//            return r.stream().map(e -> {
+//                try {
+//                    JsonNode jsonNode = mapper.readTree(e.getValueAsString());
+//                    ArrayNode arrayNode = (ArrayNode) jsonNode.get("Lrrs").get("Lrr");
+//                    for (JsonNode node : arrayNode) {
+//                        return (new MyMessage(jsonNode.get("FCntUp").intValue(), node.get("LrrId").textValue(), e.getTs()));
+//                    }
+//                } catch (Exception ex) {
+//                    log.error("Could not parse {}", e.getValueAsString(), ex);
+//                    return null;
+//                }
+//                return null;
+//            }).filter(Objects::nonNull).collect(Collectors.toList());
+            ArrayList<MyMessage> messages = new ArrayList<>();
+            r.forEach(a -> {
                 try {
-                    JsonNode jsonNode = mapper.readTree(e.getValueAsString());
-                    ArrayNode arrayNode = (ArrayNode) jsonNode.get("Lrrs").get("Lrr");
-                    for (JsonNode node : arrayNode) {
-                        return (new MyMessage(jsonNode.get("FCntUp").intValue(), node.get("LrrId").textValue(), e.getTs()));
+                    JsonNode jsonNode = mapper.readTree(a.getValueAsString());
+                    if (jsonNode.has("Lrrs")) {
+                        ArrayNode arrayNode = (ArrayNode) jsonNode.get("Lrrs").get("Lrr");
+                        for (JsonNode node : arrayNode) {
+                            messages.add(new MyMessage(jsonNode.get("FCntUp").intValue(), node.get("Lrrid").textValue(), a.getTs()));
+                        }
+                    }
+                    else {
+                        messages.add(new MyMessage(jsonNode.get("FCntUp").intValue(), jsonNode.get("Lrrid").textValue(), a.getTs()));
                     }
                 } catch (Exception ex) {
-                    log.error("Could not parse {}", e.getValueAsString(), ex);
-                    return null;
+                    log.error("Could not parse", ex);
                 }
-                return null;
-            }).filter(Objects::nonNull).collect(Collectors.toList());
+            });
+            log.info("{} messages found", messages.size());
+            return messages;
         }, ctx.getDbCallbackExecutor());
+
         return future;
     }
 
