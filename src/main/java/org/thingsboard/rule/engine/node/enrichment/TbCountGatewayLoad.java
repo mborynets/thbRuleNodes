@@ -110,70 +110,6 @@ public class TbCountGatewayLoad implements TbNode {
         return all;
     }
 
-//    private List<TsKvEntry> calculateLossPercent(Collection<TsKvEntry> telemetry) {
-//        long max = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).max().orElse(Long.MIN_VALUE);
-//        long min = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).min().orElse(Long.MIN_VALUE);
-//        long uniq = telemetry.stream().mapToLong(t -> t.getLongValue().orElse(Long.MIN_VALUE)).distinct().count();
-//        long maxTs = telemetry.stream().mapToLong(TsKvEntry::getTs).max().orElse(Long.MIN_VALUE);
-//        maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
-//        long requiredCount = max - min + 1;
-//        double lossPercent = uniq*100/requiredCount;
-//        BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new DoubleDataEntry("lossPercent", lossPercent));
-//        return Collections.singletonList(result);
-//    }
-
-//    private Collection<Collection<TsKvEntry>> partitionByDay(List<TsKvEntry> telemetry) {
-//        HashMultimap<String, TsKvEntry> multimap = HashMultimap.create();
-//        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
-//        for (TsKvEntry tsKvEntry : telemetry) {
-//            String date = sdf.format(tsKvEntry.getTs());
-//            multimap.put(date, tsKvEntry);
-//        }
-//        Collection<Collection<TsKvEntry>> values = multimap.asMap().values();
-//        return values;
-//    }
-
-//    private List<TsKvEntry> clearDuplicates(List<TsKvEntry> telemetry, TbContext ctx, Device device) {
-//        HashSet<Long> uniqCounters = new HashSet<>();
-//        ArrayList<TsKvEntry> duplicates = new ArrayList<>();
-//        ArrayList<TsKvEntry> withoutDuplicates = new ArrayList<>();
-//        telemetry.sort(Comparator.comparingLong(TsKvEntry::getTs));
-//        for (TsKvEntry tsKvEntry : telemetry) {
-//            Optional<Long> value = tsKvEntry.getLongValue();
-//            if (value.isPresent()) {
-//                if (uniqCounters.contains(value.get())) {
-//                    BasicTsKvEntry duplicate = new BasicTsKvEntry(tsKvEntry.getTs(), new BooleanDataEntry("packageDuplicate", true));
-//                    duplicates.add(duplicate);
-//                    timeseriesService.save(ctx.getTenantId(), device.getId(), Collections.singletonList(duplicate), TimeUnit.DAYS.toSeconds(90));
-//                }
-//                else {
-//                    uniqCounters.add(value.get());
-//                    withoutDuplicates.add(tsKvEntry);
-//                }
-//            }
-//        }
-//        log.info("Duplicates found: {}", duplicates.size());
-//        return  withoutDuplicates;
-//    }
-
-//    private void processDevice(TbContext ctx, Device device) {
-//        long startTs = Instant.ofEpochMilli(System.currentTimeMillis() - time).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
-//        ListenableFuture<List<TsKvEntry>> future = getTelemetry(device, ctx.getTenantId(), startTs, System.currentTimeMillis());
-//        Futures.transform(future, data -> {
-//            if (!data.isEmpty()) {
-//                List<TsKvEntry> clearData = clearDuplicates(data, ctx, device);
-//                partitionByDay(clearData).forEach(partition -> {
-//                    List<TsKvEntry> calculatedData = calculateLossPercent(partition);
-//                    timeseriesService.save(ctx.getTenantId(), device.getId(), calculatedData, 0);
-//                    log.info("Data saved {}", calculatedData);
-//                });
-//            }
-//            else {
-//                log.info("No data saved");
-//            }
-//            return true;
-//        }, ctx.getDbCallbackExecutor());
-//    }
 
     private ListenableFuture<Map<String, Device>> fetchGateways(TbContext ctx) {
         Map<String, Device> map = new ConcurrentHashMap<>();
@@ -251,8 +187,6 @@ public class TbCountGatewayLoad implements TbNode {
         long startTs = Instant.ofEpochMilli(System.currentTimeMillis() - time).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
         ListenableFuture<Map<String, Device>> gatewaysMap = fetchGateways(ctx);
         HashMultimap<Long, LoadEntry> hashMultimap = HashMultimap.create();
-//        Collection<LoadEntry> gatewayLoads = new ArrayList<>();
-//        Map<String, TsKvEntry> gatewayLoads = new ConcurrentHashMap<>();
         for (Device device : devices) {
             ListenableFuture<List<MyMessage>> rawTelemetry = getRawTelemetry(ctx, device, ctx.getTenantId(), startTs, System.currentTimeMillis());
             Futures.transform(rawTelemetry, rawData -> {
@@ -263,7 +197,6 @@ public class TbCountGatewayLoad implements TbNode {
                         long maxTs = partition.stream().mapToLong(m -> m.ts).max().orElse(Long.MIN_VALUE);
                         hashMultimap.put(maxTs, new LoadEntry(uniqueLrr, load, maxTs));
                     }
-//                      maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
                 });
                 return true;
             }, ctx.getDbCallbackExecutor());
