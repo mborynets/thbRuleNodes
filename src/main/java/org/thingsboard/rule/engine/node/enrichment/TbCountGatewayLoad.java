@@ -118,7 +118,7 @@ public class TbCountGatewayLoad implements TbNode {
         PageData<Device> gateways = deviceService.findDevicesByTenantIdAndType(ctx.getTenantId(), "Gateway", pageLink);
         log.info("{} gateways found", gateways.getData().size());
         for (Device gateway : gateways.getData()) {
-            ListenableFuture<Optional<AttributeKvEntry>> future = ctx.getAttributesService().find(ctx.getTenantId(), gateway.getId(), "lrrID", DataConstants.SERVER_SCOPE);
+            ListenableFuture<Optional<AttributeKvEntry>> future = ctx.getAttributesService().find(ctx.getTenantId(), gateway.getId(), DataConstants.SERVER_SCOPE, "lrrID");
             allFutures.add(Futures.transform(future, data -> {
                 data.ifPresent(attributeKvEntry -> {
                     map.put(attributeKvEntry.getValueAsString(), gateway);

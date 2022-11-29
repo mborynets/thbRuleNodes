@@ -52,7 +52,7 @@ import java.util.stream.Collectors;
         name = "Count package loss",
         configClazz = TbCountPackageLossConfiguration.class,
         nodeDescription = "Counts package loss of all the LoRa devices",
-        nodeDetails = "v4",
+        nodeDetails = "v4.1",
         uiResources = {"static/rulenode/custom-nodes-config.js"},
         configDirective = "TbCountPackageLossConfiguration")
 
@@ -124,19 +124,35 @@ public class TbCountPackageLoss implements TbNode {
         maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
         List<TsKvEntry> result = new ArrayList<>();
         Iterator<TsKvEntry> iterator = telemetry.iterator();
-        TsKvEntry prev = null;
+//        TsKvEntry prev = null;
         long lossSum = 0;
         telemetry = telemetry.stream().sorted(Comparator.comparingLong(TsKvEntry::getTs)).collect(Collectors.toList());
-        for (TsKvEntry curr : telemetry) {
-            if (prev != null) {
-                long delta = curr.getLongValue().orElse(Long.MIN_VALUE) - prev.getLongValue().orElse(Long.MIN_VALUE);
-                if (delta > 1 && delta < 20) {
-                    lossSum += delta-1;
-                    log.info("Loss detected: {}", delta-1);
+        List<TsKvEntry> telemetryList = new ArrayList<>(telemetry);
+        for (int i = 1; i < telemetryList.size(); i++) {
+            long curr = telemetryList.get(i).getLongValue().orElse(Long.MIN_VALUE);
+            long prev = telemetryList.get(i-1).getLongValue().orElse(Long.MIN_VALUE);
+            long diff = curr - prev;
+            if (diff > 1) {
+                if (diff < 20) {
+                    lossSum += diff-1;
+                }
+                else {
+                    if (sequenceCheck(telemetryList, i)) {
+                        lossSum += diff-1;
+                    }
                 }
             }
-            prev = curr;
         }
+//        for (TsKvEntry curr : telemetry) {
+//            if (prev != null) {
+//                long delta = curr.getLongValue().orElse(Long.MIN_VALUE) - prev.getLongValue().orElse(Long.MIN_VALUE);
+//                if (delta > 1 && delta < 20) {
+//                    lossSum += delta-1;
+//                    log.info("Loss detected: {}", delta-1);
+//                }
+//            }
+//            prev = curr;
+//        }
 
         double lossPercent = (double)lossSum / (lossSum + telemetry.size()) * 100;
 
@@ -282,6 +298,32 @@ public class TbCountPackageLoss implements TbNode {
             }).filter(Objects::nonNull).collect(Collectors.toList());
         }, ctx.getDbCallbackExecutor());
         return all;
+    }
+
+    private boolean sequenceCheck(List<TsKvEntry> list, int index) {
+        boolean isSeq = true;
+        if (index > 2 && index < list.size() - 3) {
+            for (int e = index-1; e < index+3; e++) {
+                if (list.get(e).getLongValue().orElse(Long.MIN_VALUE) > list.get(e-1).getLongValue().orElse(Long.MIN_VALUE)) {
+                    isSeq = false;
+                }
+            }
+        }
+        if (index <= 2) {
+            for (var e2 = 1; e2 < index + 4 && e2 < list.size(); e2++) {
+                if (list.get(e2).getLongValue().orElse(Long.MIN_VALUE) > list.get(e2-1).getLongValue().orElse(Long.MIN_VALUE)) {
+                    isSeq = false;
+                }
+            }
+        }
+        if (index >= list.size() - 3) {
+            for (var e3 = list.size()-1; e3 > 1 && e3 < list.size() - 5; e3--) {
+                if (list.get(e3).getLongValue().orElse(Long.MIN_VALUE) < list.get(e3-1).getLongValue().orElse(Long.MIN_VALUE)) {
+                    isSeq = false;
+                }
+            }
+        }
+        return isSeq;
     }
 
     class MyMessage {
