@@ -122,7 +122,7 @@ public class TbCountGatewayLoad implements TbNode {
             allFutures.add(Futures.transform(future, data -> {
                 data.ifPresent(attributeKvEntry -> {
                     map.put(attributeKvEntry.getValueAsString(), gateway);
-                    log.info("{} llrID is {}", gateway.getName(), attributeKvEntry.getValueAsString());
+//                    log.info("{} llrID is {}", gateway.getName(), attributeKvEntry.getValueAsString());
                 });
                 return true;
             }, ctx.getDbCallbackExecutor()));
@@ -176,7 +176,7 @@ public class TbCountGatewayLoad implements TbNode {
                     log.error("Could not parse", ex);
                 }
             });
-            log.info("{} messages found", messages.size());
+//            log.info("{} messages found", messages.size());
             return messages;
         }, ctx.getDbCallbackExecutor());
 
@@ -184,23 +184,28 @@ public class TbCountGatewayLoad implements TbNode {
     }
 
     private void countGatewayLoad(TbContext ctx, List<Device> devices) {
+        log.info("Calculating started...");
         long startTs = Instant.ofEpochMilli(System.currentTimeMillis() - time).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
         ListenableFuture<Map<String, Device>> gatewaysMap = fetchGateways(ctx);
         HashMultimap<Long, LoadEntry> hashMultimap = HashMultimap.create();
         for (Device device : devices) {
             ListenableFuture<List<MyMessage>> rawTelemetry = getRawTelemetry(ctx, device, ctx.getTenantId(), startTs, System.currentTimeMillis());
+
             Futures.transform(rawTelemetry, rawData -> {
+//                log.info("{} messages detected on device {}", rawData.size(), device.getName());
                 partitionByDay(rawData).forEach(partition -> {
                     List<String> uniqueLrrs = partition.stream().map(raw -> raw.lrrID).distinct().collect(Collectors.toList());
                     for (String uniqueLrr : uniqueLrrs) {
                         long load = partition.stream().filter(raw -> Objects.equals(raw.lrrID, uniqueLrr)).count();
                         long maxTs = partition.stream().mapToLong(m -> m.ts).max().orElse(Long.MIN_VALUE);
                         hashMultimap.put(maxTs, new LoadEntry(uniqueLrr, load, maxTs));
+//                        log.info("{} load from device {} is {}", uniqueLrr, device.getName(), load);
                     }
                 });
                 return true;
             }, ctx.getDbCallbackExecutor());
         }
+        log.info("hashMultimap values: {}", hashMultimap.asMap().values());
         Collection<Collection<LoadEntry>> gatewayLoads = hashMultimap.asMap().values();
         Futures.transform(gatewaysMap, data -> {
             if (!data.isEmpty()) {
@@ -210,7 +215,7 @@ public class TbCountGatewayLoad implements TbNode {
                         long maxTs = gatewayLoad.stream().mapToLong(m -> m.ts).max().orElse(Long.MIN_VALUE);
                         maxTs = Instant.ofEpochMilli(maxTs).truncatedTo(ChronoUnit.DAYS).toEpochMilli();
                         BasicTsKvEntry result = new BasicTsKvEntry(maxTs, new LongDataEntry("load", loadSum));
-                        log.info("Gateway {} load on {} is {} messages", stringDeviceEntry.getValue().getName(), maxTs, loadSum);
+//                        log.info("Gateway {}  total load on {} is {} messages", stringDeviceEntry.getValue().getName(), new Date(maxTs), loadSum);
                         timeseriesService.save(ctx.getTenantId(), stringDeviceEntry.getValue().getId(), Collections.singletonList(result), TimeUnit.DAYS.toSeconds(3));
                     });
 

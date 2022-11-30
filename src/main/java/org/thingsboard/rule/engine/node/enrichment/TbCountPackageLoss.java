@@ -304,21 +304,21 @@ public class TbCountPackageLoss implements TbNode {
         boolean isSeq = true;
         if (index > 2 && index < list.size() - 3) {
             for (int e = index-1; e < index+3; e++) {
-                if (list.get(e).getLongValue().orElse(Long.MIN_VALUE) > list.get(e-1).getLongValue().orElse(Long.MIN_VALUE)) {
+                if (list.get(e).getLongValue().orElse(Long.MIN_VALUE) < list.get(e-1).getLongValue().orElse(Long.MIN_VALUE)) {
                     isSeq = false;
                 }
             }
         }
         if (index <= 2) {
-            for (var e2 = 1; e2 < index + 4 && e2 < list.size(); e2++) {
-                if (list.get(e2).getLongValue().orElse(Long.MIN_VALUE) > list.get(e2-1).getLongValue().orElse(Long.MIN_VALUE)) {
+            for (var e2 = 1; e2 < 5 && e2 < list.size(); e2++) {
+                if (list.get(e2).getLongValue().orElse(Long.MIN_VALUE) < list.get(e2-1).getLongValue().orElse(Long.MIN_VALUE)) {
                     isSeq = false;
                 }
             }
         }
         if (index >= list.size() - 3) {
-            for (var e3 = list.size()-1; e3 > 1 && e3 < list.size() - 5; e3--) {
-                if (list.get(e3).getLongValue().orElse(Long.MIN_VALUE) < list.get(e3-1).getLongValue().orElse(Long.MIN_VALUE)) {
+            for (var e3 = list.size()-2; e3 > 0 && e3 > list.size() - 5; e3--) {
+                if (list.get(e3).getLongValue().orElse(Long.MIN_VALUE) > list.get(e3+1).getLongValue().orElse(Long.MIN_VALUE)) {
                     isSeq = false;
                 }
             }
